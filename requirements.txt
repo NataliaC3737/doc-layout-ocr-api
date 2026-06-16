@@ -1,0 +1,10 @@
+fastapi==0.115.6
+uvicorn[standard]==0.30.6
+Pillow==10.4.0
+torch==2.5.1
+torchvision==0.20.1
+transformers==4.46.3
+opencv-python-headless==4.10.0.84
+doclayout-yolo>=0.0.1
+python-multipart==0.0.19
+pydantic==2.9.2
