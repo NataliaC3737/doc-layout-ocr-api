@@ -1,10 +1,23 @@
+# --- Servidor web y API (FastAPI) ---
 fastapi==0.115.6
 uvicorn[standard]==0.30.6
+python-multipart==0.0.19
+pydantic==2.9.2
+requests
+
+# --- Procesamiento gráfico y documental ---
 Pillow==10.4.0
+opencv-python-headless==4.10.0.84
+pdf2image==1.17.0
+beautifulsoup4
+numpy
+
+# --- ML y modelos Locales ---
 torch==2.5.1
 torchvision==0.20.1
 transformers==4.46.3
-opencv-python-headless==4.10.0.84
+ultralytics
 doclayout-yolo>=0.0.1
-python-multipart==0.0.19
-pydantic==2.9.2
+
+# --- Integración con modelos cloud (Google) ---
+google-genai

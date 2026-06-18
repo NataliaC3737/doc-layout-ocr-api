@@ -1,0 +1,32 @@
+# Entornos virtuales locales (¡Fundamental omitirlos!)
+venv/
+.venv/
+env/
+/venv/
+
+# Caché de Python y compilados
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Control de versiones
+.git/
+.gitignore
+.github/
+
+# Archivos locales de prueba o salidas del pipeline
+*.html
+*.pdf
+*.png
+*.jpg
+*.jpeg
+sandbox_target_page*
+resultado_estructurado.html
+
+# Archivos de configuración del sistema operativo o editores
+.DS_Store
+.vscode/
+.idea/

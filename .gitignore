@@ -26,3 +26,8 @@ build/
 /tmp
 *.tmp
 *.temp
+
+# Modelos y pesos de IA
+*.pt
+*.pth
+doclayout_yolo_core.pt
