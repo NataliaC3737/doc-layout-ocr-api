@@ -17,11 +17,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 4. Copiar la estructura de código manteniendo la carpeta /app
-COPY ./app ./app
-
-# También copiamos main.py si está en la raíz de tu proyecto local
-COPY main.py . 
+# 4. Copia todo el contenido de la carpeta /app 
+COPY ./app .
 
 # 5. Descargar los pesos del modelo durante la construcción
 RUN pip install --no-cache-dir huggingface_hub && \
@@ -31,5 +28,5 @@ RUN pip install --no-cache-dir huggingface_hub && \
 # 6. Exponer el puerto estándar que utiliza Google Cloud Run
 EXPOSE 8080
 
-# 7. Comando de arranque de Uvicorn (apuntando correctamente a main:app en la raíz)
+# 7. Comando de arranque de Uvicorn
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "2"]

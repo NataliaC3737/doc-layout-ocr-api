@@ -9,8 +9,8 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from app.core_layout_segmentation import LocalLayoutVisionDetector, MultimodalStructureExtractor
-from app.document_processing_utils import rasterize_document_to_rgb_images
+from core_layout_segmentation import LocalLayoutVisionDetector, MultimodalStructureExtractor
+from document_processing_utils import rasterize_document_to_rgb_images
 
 load_dotenv()
 
