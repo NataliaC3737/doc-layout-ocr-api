@@ -10,6 +10,11 @@ from doclayout_yolo import YOLOv10
 from google import genai
 from google.genai import types
 from io import BytesIO
+from pydantic import BaseModel, Field
+
+# Esquema de Pydantic para forzar el Structured Output
+class DocumentLayout(BaseModel):
+    html: str = Field(description="Código HTML estructurado completo con los escapes necesarios según las pautas.")
 
 class LocalLayoutVisionDetector:
     """
@@ -138,11 +143,14 @@ class MultimodalStructureExtractor:
             3. DETECCIÓN E INCLUSIÓN DE IMÁGENES:
               - Si detectas cualquier imagen, gráfico, firma manuscrita, sello, dibujo o logotipo, inserta la etiqueta HTML exacta:
                 <img src="ORIGINAL_IMAGE_{page_index}" alt="Componente detectado" />
-            Genera como respuesta únicamente un objeto JSON estructurado con este formato exacto:
-            {{"html": "código_html_completo_con_escapes_necesarios"}}
-            Responde estrictamente con el JSON crudo, sin bloques de código markdown.
         """
-        request_config = types.GenerateContentConfig(response_mime_type="application/json", temperature=0.1)
+        
+        request_config = types.GenerateContentConfig(
+            response_mime_type="application/json", 
+            response_schema=DocumentLayout,
+            temperature=0.1
+        )
+
         multimodal_image_part = types.Part.from_bytes(data=image_bytes_payload, mime_type="image/jpeg")
         last_encountered_exception = "No exceptions registered"
 
