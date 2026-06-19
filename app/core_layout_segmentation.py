@@ -54,7 +54,8 @@ class LocalLayoutVisionDetector:
             opencv_bgr_image, verbose=False, imgsz=1024, conf=0.25, iou=0.45, agnostic_nms=True
         )[0]
 
-        extracted_regions = []
+        # AGRUPAR Y PRE-PROCESAR TODAS LAS CAJAS
+        raw_boxes = []
 
         for index, bounding_box in enumerate(inference_results.boxes):
             coordinates = bounding_box.xyxy[0].tolist()
@@ -68,29 +69,82 @@ class LocalLayoutVisionDetector:
             x1, y1, x2, y2 = int(coordinates[0]), int(coordinates[1]), int(coordinates[2]), int(coordinates[3])
             box_width, box_height = x2 - x1, y2 - y1
 
-            cropped_roi = opencv_bgr_image[y1:y2, x1:x2]
+            if box_width <= 0 or box_height <= 0:
+                continue
+
+            # Identificación preliminar rápida de tipos para la lógica de proximidad
+            is_image_type = any(x in raw_model_label for x in ['figure', 'picture', 'image'])
+            is_text_type = any(x in raw_model_label for x in ['caption', 'text', 'title', 'header'])
+
+            raw_boxes.append({
+                "index": index, "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+                "width": box_width, "height": box_height, "confidence": confidence_score,
+                "raw_label": raw_model_label, "is_image": is_image_type, "is_text": is_text_type
+            })
+
+        # DETECCIÓN DE CAPTIONS PARÁSITOS EN CAJAS INDEPENDIENTES
+        boxes_to_ignore = set()
+        
+        for box_a in raw_boxes:
+            if not box_a["is_image"]:
+                continue
+                
+            for box_b in raw_boxes:
+                if box_a["index"] == box_b["index"]:
+                    continue
+                
+                # Buscamos si hay una caja B (de texto o falsamente clasificada como imagen) abajo de la Imagen A
+                if box_b["is_image"] or box_b["is_text"]:
+                    separacion_vertical = box_b["y1"] - box_a["y2"]
+                    
+                    # Si está justo debajo con un margen de tolerancia máximo de 40 píxeles
+                    if 0 <= separacion_vertical < 40:
+                        # Calculamos la intersección horizontal (alineamiento de columnas)
+                        overlap_x = min(box_a["x2"], box_b["x2"]) - max(box_a["x1"], box_b["x1"])
+                        
+                        # Si comparten más del 70% del ancho de la caja inferior
+                        if overlap_x > (box_b["width"] * 0.70): 
+                            # Si es una caja de texto chata y alargada, es indiscutiblemente un pie de foto
+                            aspect_ratio_b = box_b["width"] / box_b["height"]
+                            if aspect_ratio_b > 3.5:
+                                boxes_to_ignore.add(box_b["index"])
+
+        # FILTRADO FINAL
+        extracted_regions = []
+
+        for box in raw_boxes:
+            # Ignoramos la caja por completo si el filtro de proximidad la marcó como caption
+            if box["index"] in boxes_to_ignore:
+                continue
+
+            cropped_roi = opencv_bgr_image[box["y1"]:box["y2"], box["x1"]:box["x2"]]
             if cropped_roi.size == 0:
                 continue
 
-            ink_density = self._evaluate_local_ink_density(cropped_roi, box_width, box_height)
+            ink_density = self._evaluate_local_ink_density(cropped_roi, box["width"], box["height"])
+            aspect_ratio = box["width"] / box["height"]
             semantic_label = None
 
             # Reglas de negocio del mapeo semántico híbrido
-            if 'table' in raw_model_label:
+            if 'table' in box["raw_label"]:
                 semantic_label = 'Tabla'
-            elif 'figure' in raw_model_label or 'picture' in raw_model_label:
-                if (y1 / canvas_height) < 0.25 and box_width < (canvas_width * 0.45):
-                    semantic_label = 'Logo' if ink_density > 0.10 else 'Imagen'
+            elif box["is_image"]:
+                # Filtro de descarte secundario por si hay un bloque de texto que quedó huérfano
+                if aspect_ratio > 4.5 and ink_density < 0.10:
+                    continue  # Descartar: es un bloque de texto plano flotante mal leído
+                
+                if (box["y1"] / canvas_height) < 0.20 and (box["width"] < canvas_width * 0.25) and (0.08 < ink_density < 0.40):
+                    semantic_label = 'Logo'
                 else:
                     semantic_label = 'Imagen'
-            elif 'title' in raw_model_label:
-                if (y1 / canvas_height) < 0.20 and box_width < (canvas_width * 0.40) and ink_density > 0.15:
+            elif 'title' in box["raw_label"]:
+                if (box["y1"] / canvas_height) < 0.15 and (box["width"] < canvas_width * 0.20) and ink_density > 0.45: 
                     semantic_label = 'Logo'
                 else:
                     continue  # Delegado al análisis estructural del LLM
-            elif 'abandon' in raw_model_label:
+            elif 'abandon' in box["raw_label"]:
                 if 0.02 < ink_density < 0.25:
-                    semantic_label = 'Firma' if (y1 / canvas_height) > 0.50 else 'Sello'
+                    semantic_label = 'Firma' if (box["y1"] / canvas_height) > 0.50 else 'Sello'
                 else:
                     continue
             else:
@@ -100,11 +154,11 @@ class LocalLayoutVisionDetector:
             _, image_buffer = cv2.imencode('.png', cropped_roi)
             base64_encoded_string = base64.b64encode(image_buffer).decode('utf-8')
             data_url_payload = f"data:image/png;base64,{base64_encoded_string}"
-            unique_region_id = f"region_{int(time())}_{index}"
+            unique_region_id = f"region_{int(time())}_{box['index']}"
 
             extracted_regions.append({
-                "id": unique_region_id, "label": semantic_label, "confidence": confidence_score,
-                "x": x1, "y": y1, "width": box_width, "height": box_height,
+                "id": unique_region_id, "label": semantic_label, "confidence": box["confidence"],
+                "x": box["x1"], "y": box["y1"], "width": box["width"], "height": box["height"],
                 "croppedBase64": data_url_payload, "density": ink_density
             })
 
