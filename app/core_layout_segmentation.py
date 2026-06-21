@@ -35,8 +35,7 @@ class LocalLayoutVisionDetector:
             return 0.0
 
         grayscale_roi = cv2.cvtColor(cropped_roi, cv2.COLOR_BGR2GRAY)
-
-        _, binarized_threshold = cv2.threshold(grayscale_roi, 240, 255, cv2.THRESH_BINARY_INV)
+        _, binarized_threshold = cv2.threshold(grayscale_roi, 220, 255, cv2.THRESH_BINARY_INV)
 
         return float(cv2.countNonZero(binarized_threshold) / (box_width * box_height))
 
@@ -51,7 +50,7 @@ class LocalLayoutVisionDetector:
 
         # Inferencia optimizada a 1024px nativos para análisis documental
         inference_results = self.vision_engine(
-            opencv_bgr_image, verbose=False, imgsz=1024, conf=0.25, iou=0.45, agnostic_nms=True
+            opencv_bgr_image, verbose=False, imgsz=1024, conf=0.20, iou=0.35, agnostic_nms=True
         )[0]
 
         # AGRUPAR Y PRE-PROCESAR TODAS LAS CAJAS
@@ -62,11 +61,17 @@ class LocalLayoutVisionDetector:
             confidence_score = float(bounding_box.conf[0])
             class_id = int(bounding_box.cls[0])
 
-            if confidence_score < 0.30:
+            if confidence_score < 0.35:
                 continue
 
             raw_model_label = inference_results.names[class_id].lower().strip()
-            x1, y1, x2, y2 = int(coordinates[0]), int(coordinates[1]), int(coordinates[2]), int(coordinates[3])
+            
+            # Clipping defensivo de coordenadas para evitar desbordamiento de matriz (IndexError)
+            x1 = max(0, int(coordinates[0]))
+            y1 = max(0, int(coordinates[1]))
+            x2 = min(canvas_width, int(coordinates[2]))
+            y2 = min(canvas_height, int(coordinates[3]))
+            
             box_width, box_height = x2 - x1, y2 - y1
 
             if box_width <= 0 or box_height <= 0:
@@ -74,46 +79,52 @@ class LocalLayoutVisionDetector:
 
             # Identificación preliminar rápida de tipos para la lógica de proximidad
             is_image_type = any(x in raw_model_label for x in ['figure', 'picture', 'image'])
+            is_table_type = 'table' in raw_model_label
             is_text_type = any(x in raw_model_label for x in ['caption', 'text', 'title', 'header'])
 
             raw_boxes.append({
                 "index": index, "x1": x1, "y1": y1, "x2": x2, "y2": y2,
                 "width": box_width, "height": box_height, "confidence": confidence_score,
-                "raw_label": raw_model_label, "is_image": is_image_type, "is_text": is_text_type
+                "raw_label": raw_model_label, 
+                "is_image": is_image_type, 
+                "is_table": is_table_type,
+                "is_text": is_text_type
             })
 
         # DETECCIÓN DE CAPTIONS PARÁSITOS EN CAJAS INDEPENDIENTES
         boxes_to_ignore = set()
         
         for box_a in raw_boxes:
-            if not box_a["is_image"]:
+            # Los contenedores macro pueden ser imágenes O tablas
+            is_container = box_a["is_image"] or box_a["is_table"]
+            if not is_container:
                 continue
                 
             for box_b in raw_boxes:
                 if box_a["index"] == box_b["index"]:
                     continue
                 
-                # Buscamos si hay una caja B (de texto o falsamente clasificada como imagen) abajo de la Imagen A
-                if box_b["is_image"] or box_b["is_text"]:
-                    separacion_vertical = box_b["y1"] - box_a["y2"]
+                if box_b["is_text"]:
+                    # Evaluación Bidireccional: Abajo (Pie de foto) o Arriba (Título de tabla)
+                    sep_vertical_debajo = box_b["y1"] - box_a["y2"]
+                    es_adyacente_debajo = 0 <= sep_vertical_debajo < 40
+
+                    sep_vertical_arriba = box_a["y1"] - box_b["y2"]
+                    es_adyacente_arriba = 0 <= sep_vertical_arriba < 40
                     
-                    # Si está justo debajo con un margen de tolerancia máximo de 40 píxeles
-                    if 0 <= separacion_vertical < 40:
-                        # Calculamos la intersección horizontal (alineamiento de columnas)
+                    if es_adyacente_debajo or es_adyacente_arriba:
+                        # Validación de colinealidad en el eje horizontal (Overlap X > 70%)
                         overlap_x = min(box_a["x2"], box_b["x2"]) - max(box_a["x1"], box_b["x1"])
                         
-                        # Si comparten más del 70% del ancho de la caja inferior
                         if overlap_x > (box_b["width"] * 0.70): 
-                            # Si es una caja de texto chata y alargada, es indiscutiblemente un pie de foto
                             aspect_ratio_b = box_b["width"] / box_b["height"]
                             if aspect_ratio_b > 3.5:
                                 boxes_to_ignore.add(box_b["index"])
 
-        # FILTRADO FINAL
+        # FILTRADO Y PROCESAMIENTO FINAL
         extracted_regions = []
 
         for box in raw_boxes:
-            # Ignoramos la caja por completo si el filtro de proximidad la marcó como caption
             if box["index"] in boxes_to_ignore:
                 continue
 
@@ -126,28 +137,22 @@ class LocalLayoutVisionDetector:
             semantic_label = None
 
             # Reglas de negocio del mapeo semántico híbrido
-            if 'table' in box["raw_label"]:
+            if box["is_table"]:
                 semantic_label = 'Tabla'
             elif box["is_image"]:
-                # Filtro de descarte secundario por si hay un bloque de texto que quedó huérfano
-                if aspect_ratio > 4.5 and ink_density < 0.10:
-                    continue  # Descartar: es un bloque de texto plano flotante mal leído
-                
-                if (box["y1"] / canvas_height) < 0.20 and (box["width"] < canvas_width * 0.25) and (0.08 < ink_density < 0.40):
+                if aspect_ratio > 4.5 and ink_density < 0.10: 
+                    semantic_label = 'Texto'  # Se reclasifica a Texto en lugar de 'continue'
+                elif (box["y1"] / canvas_height) < 0.20 and (box["width"] < canvas_width * 0.25) and (0.05 < ink_density < 0.40):
                     semantic_label = 'Logo'
                 else:
                     semantic_label = 'Imagen'
-            elif 'title' in box["raw_label"]:
-                if (box["y1"] / canvas_height) < 0.15 and (box["width"] < canvas_width * 0.20) and ink_density > 0.45: 
-                    semantic_label = 'Logo'
-                else:
-                    continue  # Delegado al análisis estructural del LLM
             elif 'abandon' in box["raw_label"]:
-                if 0.02 < ink_density < 0.25:
-                    semantic_label = 'Firma' if (box["y1"] / canvas_height) > 0.50 else 'Sello'
-                else:
-                    continue
+                semantic_label = 'Firma' if (box["y1"] / canvas_height) > 0.50 else 'Sello'
             else:
+                semantic_label = 'Texto'
+
+            # Exclusión de texto plano estructural para optimizar procesamiento downstream (LLM)
+            if semantic_label == 'Texto' or 'caption' in box["raw_label"]:
                 continue
 
             # Codificación a formato Data URL (Base64)
@@ -156,10 +161,21 @@ class LocalLayoutVisionDetector:
             data_url_payload = f"data:image/png;base64,{base64_encoded_string}"
             unique_region_id = f"region_{int(time())}_{box['index']}"
 
+            # Inclusión de métricas porcentuales del canvas (Invariabilidad a re-escalados)
             extracted_regions.append({
-                "id": unique_region_id, "label": semantic_label, "confidence": box["confidence"],
-                "x": box["x1"], "y": box["y1"], "width": box["width"], "height": box["height"],
-                "croppedBase64": data_url_payload, "density": ink_density
+                "id": unique_region_id, 
+                "label": semantic_label, 
+                "confidence": box["confidence"],
+                "x": box["x1"], 
+                "y": box["y1"], 
+                "width": box["width"], 
+                "height": box["height"],
+                "percentX": (box["x1"] / canvas_width) * 100,
+                "percentY": (box["y1"] / canvas_height) * 100,
+                "percentWidth": (box["width"] / canvas_width) * 100,
+                "percentHeight": (box["height"] / canvas_height) * 100,
+                "croppedBase64": data_url_payload, 
+                "density": ink_density
             })
 
         return {
@@ -167,7 +183,6 @@ class LocalLayoutVisionDetector:
             "originalHeight": canvas_height, 
             "regions": extracted_regions
         }
-
 
 class MultimodalStructureExtractor:
     """
@@ -188,12 +203,24 @@ class MultimodalStructureExtractor:
         image_bytes_payload = memory_buffer.getvalue()
 
         system_instruction_prompt = f"""
-            Eres un motor avanzado de análisis y estructuración de layouts de documentos. Tu objetivo es procesar las imágenes suministradas, detectar con precisión la disposición visual de todos sus elementos y compilar este layout de alta fidelidad en código HTML estructurado.
+            Eres un motor avanzado de análisis y estructuración de layouts de documentos. Tu objetivo es procesar las imágenes suministradas, detectar con precisión la disposición visual de todos sus elementos (encabezados, tablas, listas de tareas, firmas, sellos, diagramas, bloques de texto) y compilar este layout de alta fidelidad en código HTML estructurado.
+
             Sigue rigurosamente estas pautas:
             1. Analiza el orden de los elementos tal como están ubicados en las páginas (de arriba a abajo).
-            2. Traduce los bloques detectados a los siguientes tags estándar de HTML estructurado: <h1>, <h2>, <h3>, <p>, <ul>, <ol>, <table>.
+            2. Traduce los bloques detectados a los siguientes tags estándar de HTML estructurado:
+              - Títulos o cabeceras: <h1>, <h2>, <h3>.
+              - Párrafos regulares: <p> con su contenido exacto detectado por OCR.
+              - Listas: <ul> y <li> para viñetas, <ol> y <li> para ordenados.
+              - Tablas de datos complejas: digitaliza la tabla usando <table>, <tr>, <th>, y <td>.
+
             NORMAS CRÍTICAS DE LIMPIEZA DE CÓDIGO HTML:
-            - Queda TOTALMENTE PROHIBIDO el uso de etiquetas <span> con estilos en línea o saltos de línea vacíos (<br>).
+            - Queda TOTALMENTE PROHIBIDO el uso de etiquetas <span> con estilos en línea.
+            - Queda TOTALMENTE PROHIBIDO el uso de saltos de línea vacíos (<br>).
+
+            MANEJO DE LÍNEAS DE PUNTOS O CAMPOS VACÍOS (REGLA CRÍTICA):
+            - Si encuentras zonas con secuencias de muchos puntos seguidos (ej. ".........." usados comúnmente como líneas de llenado en formularios), NO los transcribas ni los tengas en cuenta en el contenido del texto.
+            - Ignora por completo esos puntos y continúa construyendo el layout y el texto de manera fluida y natural, respetando la estructura original del documento como si esa secuencia de puntos no existiera.
+
             3. DETECCIÓN E INCLUSIÓN DE IMÁGENES:
               - Si detectas cualquier imagen, gráfico, firma manuscrita, sello, dibujo o logotipo, inserta la etiqueta HTML exacta:
                 <img src="ORIGINAL_IMAGE_{page_index}" alt="Componente detectado" />

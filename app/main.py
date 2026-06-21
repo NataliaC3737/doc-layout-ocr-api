@@ -153,7 +153,7 @@ async def process_document_pipeline(file: UploadFile = File(...)):
                 for child_node in list(page_soup_fragment.children):
                     master_document_body.append(child_node)
 
-            # Pausa de cortesía para evitar saturar la API de Gemini
+            # Pausa para evitar saturar la API de Gemini
             if page_index < len(document_pages) - 1:
                 aesthetic_page_divider = master_html_soup.new_tag("hr")
                 aesthetic_page_divider["style"] = "border-top: 2px dashed #e2e8f0; margin: 40px 0;"
